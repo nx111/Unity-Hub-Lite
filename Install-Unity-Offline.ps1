@@ -7,13 +7,41 @@ param(
     [string]$ConfigJson,
     [switch]$SkipEditor,
     [switch]$ListOnly,
-    [switch]$DownloadOnly
+    [switch]$DownloadOnly,
+    [switch]$ElevatedRetry
 )
 
 $ErrorActionPreference = "Stop"
 $PackageRoot = $PSScriptRoot
 
 $script:PreparedDestinations = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+
+function Test-IsAdmin {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Test-PathWritable {
+    param([string]$Path)
+
+    try {
+        $dir = $Path
+        while (-not (Test-Path -LiteralPath $dir)) {
+            $parent = Split-Path -Parent $dir
+            if ([string]::IsNullOrEmpty($parent) -or $parent -eq $dir) { return $false }
+            $dir = $parent
+        }
+
+        $probe = Join-Path $dir (".write-test-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType File -Path $probe -Force | Out-Null
+        Remove-Item -LiteralPath $probe -Force
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
 
 function Get-UnitySetupExe {
     param([string]$Explicit)
@@ -493,7 +521,30 @@ function Install-ExePackage {
     $psi.FileName = $ExePath
     $psi.Arguments = "/S /D=$Destination"
     $psi.UseShellExecute = $false
-    $process = [System.Diagnostics.Process]::Start($psi)
+    $process = $null
+    try {
+        $process = [System.Diagnostics.Process]::Start($psi)
+    }
+    catch [System.ComponentModel.Win32Exception] {
+        # 740 = ERROR_ELEVATION_REQUIRED: the NSIS installer manifest demands
+        # admin even for user-writable destinations. Fall back to a UAC prompt.
+        if ($_.Exception.NativeErrorCode -ne 740) {
+            throw
+        }
+    }
+    if (-not $process) {
+        Write-Host "  Installer requires elevation; showing UAC prompt..."
+        try {
+            $elevated = Start-Process -FilePath $ExePath -ArgumentList "/S /D=$Destination" -Verb RunAs -Wait -PassThru
+        }
+        catch {
+            throw "Elevation was declined for $ExePath. Re-run as administrator or install Unity to a user-writable folder."
+        }
+        if ($elevated.ExitCode -ne 0) {
+            throw "Installer failed ($($elevated.ExitCode)): $ExePath"
+        }
+        return
+    }
     if (-not $process) {
         throw "Failed to start installer: $ExePath"
     }
@@ -813,6 +864,44 @@ Write-Host "Using editor root: $unityPath"
 $ordered = @()
 $ordered += @($plan | Where-Object { $_.Kind -eq "module" -and $_.Type -eq "EXE" -and $_.Available })
 $ordered += @($plan | Where-Object { $_.Kind -eq "module" -and $_.Type -ne "EXE" -and $_.Available })
+
+# Modules write into the editor root. If that needs admin, continue the module
+# phase in one elevated child process (single UAC prompt) instead of failing.
+if ($ordered.Count -gt 0 -and -not $ElevatedRetry -and -not (Test-IsAdmin) -and
+    -not (Test-PathWritable -Path (Join-Path $unityPath "Editor"))) {
+
+    Write-Host "Modules need write access to $unityPath; continuing with one UAC elevation prompt..."
+
+    $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $PSCommandPath + '"'), "-ElevatedRetry")
+    foreach ($key in $PSBoundParameters.Keys) {
+        $value = $PSBoundParameters[$key]
+        if ($value -is [switch]) {
+            if ($value.IsPresent) { $argList += "-$key" }
+        }
+        elseif ($value -is [array]) {
+            $argList += "-$key"
+            foreach ($element in $value) { $argList += ('"' + "$element" + '"') }
+        }
+        else {
+            $argList += "-$key"
+            $argList += ('"' + "$value" + '"')
+        }
+    }
+
+    try {
+        $elevated = Start-Process -FilePath "powershell.exe" -ArgumentList ($argList -join " ") -Verb RunAs -Wait -PassThru
+    }
+    catch {
+        throw "Elevation was declined; cannot install modules into $unityPath. Re-run as administrator or install Unity to a user-writable folder."
+    }
+    if ($elevated.ExitCode -ne 0) {
+        throw "Elevated module install failed (exit $($elevated.ExitCode))."
+    }
+
+    Write-Host ""
+    Write-Host "Done. Unity $version installed at $unityPath"
+    return
+}
 
 foreach ($item in $ordered) {
     switch ($item.Type) {
