@@ -15,6 +15,12 @@ npm run tauri dev
 npm run tauri build
 ```
 
+生成免安装 portable 压缩包（需先完成构建）：
+
+```powershell
+npm run portable
+```
+
 如果 Tauri CLI 报 `called Option::unwrap() on a None value`，通常是 Rust 工具链未完成安装。项目脚本会先检查工具链并给出具体错误；修复后重试：
 
 ```powershell

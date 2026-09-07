@@ -7,7 +7,8 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "node scripts/tauri.mjs"
+    "tauri": "node scripts/tauri.mjs",
+    "portable": "node scripts/package-portable.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0"
