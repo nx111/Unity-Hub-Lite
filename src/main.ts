@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import "./styles.css";
 
@@ -221,6 +222,10 @@ async function loadRelease(version: string, rerender = true): Promise<void> {
   if (rerender) render();
   try {
     state.release = await invoke<ReleaseDetail>("get_release", { version, cacheDir: state.cacheDir });
+    if (isTauri()) {
+      const detected = await invoke<string | null>("detect_install_dir", { version, current: state.installDir });
+      if (detected) state.installDir = detected;
+    }
     state.selectedIds = new Set();
     for (const component of state.release.modules) {
       if (component.preSelected || component.required) setSelectedTree(component, true);
@@ -335,8 +340,8 @@ function render(): void {
           </div>
           <div class="panel destination-panel">
             <div class="panel-label">安装位置</div>
-            <label class="path-label">Editor 目录<input id="install-dir" value="${escapeHtml(state.installDir)}" placeholder="例如 C:\\Unity\\6000.6.0f1" /></label>
-            <label class="path-label">下载缓存<input id="cache-dir" value="${escapeHtml(state.cacheDir)}" placeholder="可复用的本地组件缓存目录" /></label>
+            <div class="path-field"><label class="path-label" for="install-dir">Editor 目录</label><div class="path-row"><input id="install-dir" value="${escapeHtml(state.installDir)}" placeholder="例如 C:\\Unity\\6000.6.0f1" /><button class="path-button" id="browse-install" type="button" title="浏览文件夹">浏览</button></div></div>
+            <div class="path-field"><label class="path-label" for="cache-dir">下载缓存</label><div class="path-row"><input id="cache-dir" value="${escapeHtml(state.cacheDir)}" placeholder="可复用的本地组件缓存目录" /><button class="path-button" id="browse-cache" type="button" title="浏览文件夹">浏览</button></div></div>
             <label class="toggle-line"><input type="checkbox" id="offline-toggle" ${state.offline ? "checked" : ""}><span class="toggle"></span><span>仅使用本地缓存（离线安装）</span></label>
           </div>
         </section>
@@ -369,6 +374,8 @@ function bindEvents(): void {
     state.cacheDir = (event.target as HTMLInputElement).value;
     void refreshCache();
   });
+  document.querySelector<HTMLButtonElement>("#browse-install")?.addEventListener("click", () => void browseFolder("install"));
+  document.querySelector<HTMLButtonElement>("#browse-cache")?.addEventListener("click", () => void browseFolder("cache"));
   document.querySelector<HTMLInputElement>("#offline-toggle")?.addEventListener("change", (event) => {
     state.offline = (event.target as HTMLInputElement).checked;
     render();
@@ -389,6 +396,17 @@ function bindEvents(): void {
   });
   document.querySelector<HTMLButtonElement>("#install-button")?.addEventListener("click", () => void startInstall());
   document.querySelector<HTMLButtonElement>("#cancel-button")?.addEventListener("click", () => void cancelInstall());
+}
+
+async function browseFolder(target: "install" | "cache"): Promise<void> {
+  if (!isTauri()) return;
+  const current = target === "install" ? state.installDir : state.cacheDir;
+  const selected = await open({ directory: true, multiple: false, defaultPath: current || undefined });
+  if (typeof selected !== "string" || !selected) return;
+  if (target === "install") state.installDir = selected;
+  else state.cacheDir = selected;
+  render();
+  await refreshCache();
 }
 
 async function uninstallModule(moduleId: string): Promise<void> {

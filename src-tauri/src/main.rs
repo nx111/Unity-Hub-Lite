@@ -142,6 +142,111 @@ fn default_install_dir() -> PathBuf {
     }
 }
 
+fn hub_config_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("UnityHub"))
+}
+
+#[cfg(windows)]
+fn registry_editor_location(version: &str) -> Option<PathBuf> {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+    use winreg::RegKey;
+    let key = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(format!(r"SOFTWARE\Unity Technologies\Installer\Unity {version}"), KEY_READ)
+        .ok()?;
+    key.get_value::<String, _>("Location x64")
+        .or_else(|_| key.get_value::<String, _>("Location"))
+        .ok()
+        .map(PathBuf::from)
+}
+
+#[cfg(not(windows))]
+fn registry_editor_location(_version: &str) -> Option<PathBuf> {
+    None
+}
+
+fn hub_editor_config_candidates(version: &str) -> Vec<PathBuf> {
+    let Some(dir) = hub_config_dir() else { return Vec::new() };
+    let mut candidates = Vec::new();
+    // editors-v2.json: schema v2 uses {"data":[...]}; older builds map version -> [entries].
+    if let Ok(raw) = fs::read_to_string(dir.join("editors-v2.json")) {
+        if let Ok(value) = serde_json::from_str::<Value>(&raw) {
+            let entries: Vec<Value> = match value.get("data").and_then(Value::as_array) {
+                Some(items) => items.clone(),
+                None => value
+                    .as_object()
+                    .map(|map| {
+                        map.values()
+                            .flat_map(|item| match item {
+                                Value::Array(items) => items.iter().cloned().collect::<Vec<_>>(),
+                                other => vec![other.clone()],
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            };
+            for entry in entries {
+                if !text_field(&entry, "version").eq_ignore_ascii_case(version) { continue; }
+                if let Some(folder) = optional_text(&entry, "folderPath") {
+                    candidates.push(PathBuf::from(folder));
+                }
+                let location = entry.get("location").and_then(|item| match item {
+                    Value::Array(items) => items.first().and_then(Value::as_str),
+                    other => other.as_str(),
+                });
+                if let Some(location) = location {
+                    if let Some(root) = location.split("/Editor/").next() {
+                        candidates.push(PathBuf::from(root));
+                    }
+                }
+            }
+        }
+    }
+    // secondaryInstallPath.json holds the editor root as a JSON string.
+    if let Ok(raw) = fs::read_to_string(dir.join("secondaryInstallPath.json")) {
+        if let Ok(path) = serde_json::from_str::<String>(raw.trim()) {
+            candidates.push(PathBuf::from(path).join(version));
+        }
+    }
+    candidates
+}
+
+fn default_hub_editor_root() -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(r"C:\Program Files\Unity\Hub\Editor")
+    }
+    #[cfg(not(windows))]
+    {
+        dirs::home_dir().unwrap_or_default().join("Unity").join("Hub").join("Editor")
+    }
+}
+
+fn editor_binary_exists(dir: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        dir.join("Editor").join("Unity.exe").is_file()
+    }
+    #[cfg(not(windows))]
+    {
+        dir.join("Editor").join("Unity").is_file()
+    }
+}
+
+fn find_installed_editor(version: &str, current: Option<&str>) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(location) = registry_editor_location(version) {
+        candidates.push(location);
+    }
+    if let Some(current) = current.map(PathBuf::from) {
+        if let Some(parent) = current.parent() {
+            candidates.push(parent.join(version));
+        }
+    }
+    candidates.extend(hub_editor_config_candidates(version));
+    candidates.push(default_hub_editor_root().join(version));
+    candidates.into_iter().find(|dir| editor_binary_exists(dir))
+}
+
 fn text_field(value: &Value, key: &str) -> String {
     value.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
 }
@@ -793,6 +898,11 @@ fn get_defaults() -> AppDefaults {
 }
 
 #[tauri::command]
+fn detect_install_dir(version: String, current: Option<String>) -> Option<String> {
+    find_installed_editor(&version, current.as_deref()).map(|path| path.display().to_string())
+}
+
+#[tauri::command]
 fn list_versions(cache_dir: Option<String>) -> Result<Vec<VersionSummary>, String> {
     let cache = cache_dir.map(PathBuf::from).unwrap_or_else(default_cache_dir);
     // Unity currently caps this endpoint's page size at 25. The latest page is
@@ -925,8 +1035,9 @@ fn uninstall_module(state: State<'_, InstallState>, release: ReleaseDetail, modu
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(InstallState { running: Arc::new(AtomicBool::new(false)), cancel: Arc::new(AtomicBool::new(false)) })
-        .invoke_handler(tauri::generate_handler![get_defaults, list_versions, get_release, cache_status, start_install, cancel_install, uninstall_module])
+        .invoke_handler(tauri::generate_handler![get_defaults, detect_install_dir, list_versions, get_release, cache_status, start_install, cancel_install, uninstall_module])
         .run(tauri::generate_context!())
         .expect("error while running Unity Hub Lite");
 }

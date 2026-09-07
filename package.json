@@ -11,7 +11,8 @@
     "portable": "node scripts/package-portable.mjs"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.8.0"
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.7.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",

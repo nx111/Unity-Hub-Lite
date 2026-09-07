@@ -67,9 +67,13 @@ select:focus, input:focus { border-color: #78b94e; box-shadow: 0 0 0 3px #8bd451
 .release-date { margin-left: auto; }
 .release-revision { color: #586573; }
 .loading-copy { margin-top: 22px; color: var(--muted); font-size: 12px; }
-.path-label { display: block; margin-top: 12px; color: #7f8c98; font-size: 10px; }
-.path-label:first-of-type { margin-top: 13px; }
-.path-label input { display: block; margin-top: 5px; padding: 8px 10px; font: 11px "DM Mono", monospace; }
+.path-field { margin-top: 12px; }
+.path-field:first-of-type { margin-top: 13px; }
+.path-label { display: block; color: #7f8c98; font-size: 10px; }
+.path-row { display: flex; gap: 6px; margin-top: 5px; }
+.path-row input { flex: 1; min-width: 0; padding: 8px 10px; font: 11px "DM Mono", monospace; }
+.path-button { flex: none; padding: 0 10px; border: 1px solid #323d49; border-radius: 7px; background: #182028; color: #a0acb4; font: 700 11px "DM Mono", monospace; cursor: pointer; }
+.path-button:hover { border-color: #78b94e; color: #e7ffd0; }
 .toggle-line { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: #a0acb4; font-size: 11px; cursor: pointer; }
 .toggle-line input { display: none; }
 .toggle { position: relative; width: 26px; height: 15px; border-radius: 9px; background: #303944; transition: .2s; }
