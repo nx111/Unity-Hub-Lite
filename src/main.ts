@@ -13,6 +13,23 @@ interface VersionSummary {
   downloadSize?: number;
 }
 
+function compareVersions(a: string, b: string): number {
+  const parse = (value: string) => value.match(/\d+|\D+/g) ?? [];
+  const left = parse(a);
+  const right = parse(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    const x = left[i] ?? "";
+    const y = right[i] ?? "";
+    if (/^\d+$/.test(x) && /^\d+$/.test(y)) {
+      const difference = Number(x) - Number(y);
+      if (difference !== 0) return difference;
+    } else if (x !== y) {
+      return x < y ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
 interface PackageInfo {
   id: string;
   name: string;
@@ -80,6 +97,7 @@ interface AppDefaults {
 
 const state = {
   versions: [] as VersionSummary[],
+  installedVersions: {} as Record<string, string>,
   selectedVersion: "",
   release: null as ReleaseDetail | null,
   selectedIds: new Set<string>(),
@@ -212,7 +230,14 @@ async function loadVersions(): Promise<void> {
   render();
   try {
     state.versions = await invoke<VersionSummary[]>("list_versions", { cacheDir: state.cacheDir });
-    if (!state.selectedVersion && state.versions.length > 0) state.selectedVersion = state.versions[0].version;
+    state.installedVersions = isTauri()
+      ? await invoke<Record<string, string>>("installed_versions", { versions: state.versions.map((item) => item.version) })
+      : {};
+    const installedList = Object.keys(state.installedVersions);
+    const preferred = installedList.length > 0
+      ? installedList.reduce((latest, version) => (compareVersions(version, latest) > 0 ? version : latest))
+      : state.versions[0]?.version;
+    if (!state.selectedVersion) state.selectedVersion = preferred ?? state.versions[0]?.version ?? "";
     await loadRelease(state.selectedVersion, false);
   } catch (error) {
     state.error = `版本列表加载失败：${String(error)}`;
@@ -254,7 +279,7 @@ function renderVersionOptions(): string {
   return state.versions
     .map(
       (item) =>
-        `<option value="${escapeHtml(item.version)}" ${item.version === state.selectedVersion ? "selected" : ""}>${escapeHtml(item.version)} · ${escapeHtml(item.stream || "Release")}</option>`,
+        `<option value="${escapeHtml(item.version)}" ${item.version === state.selectedVersion ? "selected" : ""}>${escapeHtml(item.version)} · ${escapeHtml(item.stream || "Release")}${state.installedVersions[item.version] ? " ✓ 已安装" : ""}</option>`,
     )
     .join("");
 }

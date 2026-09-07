@@ -915,6 +915,14 @@ fn detect_install_dir(version: String, current: Option<String>) -> Option<String
 }
 
 #[tauri::command]
+fn installed_versions(versions: Vec<String>) -> HashMap<String, String> {
+    versions
+        .into_iter()
+        .filter_map(|version| find_installed_editor(&version, None).map(|path| (version, path.display().to_string())))
+        .collect()
+}
+
+#[tauri::command]
 fn list_versions(cache_dir: Option<String>) -> Result<Vec<VersionSummary>, String> {
     let cache = cache_dir.map(PathBuf::from).unwrap_or_else(default_cache_dir);
     // Unity currently caps this endpoint's page size at 25. The latest page is
@@ -1050,7 +1058,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(InstallState { running: Arc::new(AtomicBool::new(false)), cancel: Arc::new(AtomicBool::new(false)) })
-        .invoke_handler(tauri::generate_handler![get_defaults, detect_install_dir, list_versions, get_release, cache_status, start_install, cancel_install, uninstall_module])
+        .invoke_handler(tauri::generate_handler![get_defaults, detect_install_dir, installed_versions, list_versions, get_release, cache_status, start_install, cancel_install, uninstall_module])
         .run(tauri::generate_context!())
         .expect("error while running Unity Hub Lite");
 }
