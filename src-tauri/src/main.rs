@@ -368,7 +368,7 @@ fn content_length(response: &Response) -> Option<u64> {
     response.headers().get(CONTENT_LENGTH)?.to_str().ok()?.parse().ok()
 }
 
-fn find_legacy_package(package: &PackageInfo, cache_root: &Path, filename: &str) -> Option<PathBuf> {
+fn legacy_package_candidates(cache_root: &Path, filename: &str) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(parent) = cache_root.parent() {
         candidates.push(parent.join(filename));
@@ -381,10 +381,18 @@ fn find_legacy_package(package: &PackageInfo, cache_root: &Path, filename: &str)
             candidates.push(parent.join(filename));
         }
     }
-    candidates.into_iter().find(|candidate| {
+    candidates
+}
+
+fn find_legacy_package(package: &PackageInfo, cache_root: &Path, filename: &str) -> Option<PathBuf> {
+    legacy_package_candidates(cache_root, filename).into_iter().find(|candidate| {
         is_complete(candidate, package.size)
             && verify_integrity(candidate, package.size, package.integrity.as_deref()).is_ok()
     })
+}
+
+fn find_legacy_package_by_size(package: &PackageInfo, cache_root: &Path, filename: &str) -> Option<PathBuf> {
+    legacy_package_candidates(cache_root, filename).into_iter().find(|candidate| is_complete(candidate, package.size))
 }
 
 fn download_package(
@@ -653,7 +661,7 @@ fn cache_status(release: ReleaseDetail, cache_dir: String) -> Result<HashMap<Str
         let filename = package_filename(&package);
         let target = root.join(&filename);
         let part = root.join(format!("{filename}.part"));
-        let legacy = find_legacy_package(&package, &root, &filename);
+        let legacy = find_legacy_package_by_size(&package, &root, &filename);
         let size = fs::metadata(&target).map(|item| item.len()).or_else(|_| fs::metadata(&part).map(|item| item.len())).unwrap_or(0);
         result.insert(package.id, CacheStatus { exists: size > 0 || legacy.is_some(), size, complete: is_complete(&target, package.size) || legacy.is_some() });
     }
