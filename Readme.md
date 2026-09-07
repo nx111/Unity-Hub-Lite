@@ -1,5 +1,22 @@
 # Install-Unity-Offline.ps1 使用说明
 
+## Unity Hub Lite（Tauri 桌面版）
+
+仓库同时包含一个轻量的 Unity Hub Lite 桌面安装器。它从 Unity 发布接口读取 Windows x86_64 Editor 版本和组件树，支持组件选择、断点续传、完整性校验，以及复用本地缓存的离线安装。
+
+```powershell
+npm install
+npm run tauri dev
+```
+
+发布安装包：
+
+```powershell
+npm run tauri build
+```
+
+缓存按 `缓存目录/<Unity版本>/` 保存，未完成的下载保留为 `.part` 文件。勾选“仅使用本地缓存（离线安装）”后不会访问网络；Editor 元数据也会从同一目录的 `release.json` 回退读取。
+
 ## 用途
 
 脚本用于准备并安装 Windows 版 Unity 离线安装包。默认以脚本所在目录作为包目录：
