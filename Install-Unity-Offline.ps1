@@ -521,6 +521,7 @@ function Install-ExePackage {
     $psi.FileName = $ExePath
     $psi.Arguments = "/S /D=$Destination"
     $psi.UseShellExecute = $false
+    $isAdmin = Test-IsAdmin
     $process = $null
     try {
         $process = [System.Diagnostics.Process]::Start($psi)
@@ -533,17 +534,31 @@ function Install-ExePackage {
         }
     }
     if (-not $process) {
-        Write-Host "  Installer requires elevation; showing UAC prompt..."
-        try {
-            $elevated = Start-Process -FilePath $ExePath -ArgumentList "/S /D=$Destination" -Verb RunAs -Wait -PassThru
+        if ($isAdmin) {
+            Write-Host "  Installer requires shell launch; retrying with the current administrator token..."
+            # Use ShellExecute to honor the installer's elevation manifest without
+            # requesting a second RunAs consent from an already elevated process.
+            $psi.UseShellExecute = $true
+            try {
+                $process = [System.Diagnostics.Process]::Start($psi)
+            }
+            catch {
+                throw "Failed to start installer with administrator privileges: $ExePath"
+            }
         }
-        catch {
-            throw "Elevation was declined for $ExePath. Re-run as administrator or install Unity to a user-writable folder."
+        else {
+            Write-Host "  Installer requires elevation; showing UAC prompt..."
+            try {
+                $process = Start-Process -FilePath $ExePath -ArgumentList $psi.Arguments -Verb RunAs -Wait -PassThru
+            }
+            catch {
+                throw "Elevation was declined for $ExePath. Re-run as administrator or install Unity to a user-writable folder."
+            }
+            if ($process.ExitCode -ne 0) {
+                throw "Installer failed ($($process.ExitCode)): $ExePath"
+            }
+            return
         }
-        if ($elevated.ExitCode -ne 0) {
-            throw "Installer failed ($($elevated.ExitCode)): $ExePath"
-        }
-        return
     }
     if (-not $process) {
         throw "Failed to start installer: $ExePath"
