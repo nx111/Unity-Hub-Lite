@@ -23,7 +23,7 @@ npm run portable
 
 ## GitHub Actions
 
-`.github/workflows/build.yml` 会在 `main` push、Pull Request 和手动触发时构建 Windows x64 安装包，并上传 MSI、NSIS 和 portable ZIP 工件。推送 `v*` 标签时还会自动创建 GitHub Release 并附加这些文件。
+`.github/workflows/build.yml` 会在 `main` push、Pull Request 和手动触发时构建 Windows x64 安装包，并上传 MSI、NSIS 和 portable ZIP 工件。推送 `v*` 标签时会自动创建 GitHub Release；从 Actions 页面手动运行时，勾选 `publish` 并填写 `release_tag` 也可以发布。
 
 如果 Tauri CLI 报 `called Option::unwrap() on a None value`，通常是 Rust 工具链未完成安装。项目脚本会先检查工具链并给出具体错误；修复后重试：
 
