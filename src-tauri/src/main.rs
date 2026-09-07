@@ -697,6 +697,8 @@ fn cache_status(release: ReleaseDetail, cache_dir: String) -> Result<HashMap<Str
 
 #[tauri::command]
 fn start_install(app: AppHandle, state: State<'_, InstallState>, request: InstallRequest) -> Result<(), String> {
+    if request.destination.trim().is_empty() { return Err("安装目录不能为空".to_string()); }
+    if request.cache_dir.trim().is_empty() { return Err("缓存目录不能为空".to_string()); }
     if state.running.swap(true, Ordering::SeqCst) { return Err("已有安装任务正在运行".to_string()); }
     state.cancel.store(false, Ordering::SeqCst);
     let task_state = state.inner().clone();
