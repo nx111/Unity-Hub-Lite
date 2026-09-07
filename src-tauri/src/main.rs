@@ -149,6 +149,11 @@ fn optional_text(value: &Value, key: &str) -> Option<String> {
     if text.trim().is_empty() { None } else { Some(text) }
 }
 
+fn is_language_pack(id: &str, category: Option<&str>) -> bool {
+    category.is_some_and(|item| item.eq_ignore_ascii_case("LANGUAGE_PACK"))
+        || id.to_ascii_lowercase().starts_with("language-")
+}
+
 fn size_field(value: &Value, key: &str) -> Option<u64> {
     let raw = value.get(key)?;
     raw.as_u64().or_else(|| raw.get("value").and_then(Value::as_u64))
@@ -169,8 +174,7 @@ fn parse_component(value: &Value) -> Component {
     let rename = value.get("extractedPathRename");
     let id = text_field(value, "id");
     let category = optional_text(value, "category");
-    let language_pack = category.as_deref().is_some_and(|item| item.eq_ignore_ascii_case("LANGUAGE_PACK"))
-        || id.to_ascii_lowercase().starts_with("language-");
+    let language_pack = is_language_pack(&id, category.as_deref());
     Component {
         id,
         name: text_field(value, "name"),
@@ -253,7 +257,25 @@ fn release_values(value: Value) -> Vec<Value> {
 fn read_cached_release(cache_dir: &Path, version: &str) -> Option<ReleaseDetail> {
     let path = cache_dir.join(version).join("release.json");
     let data = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
+    let mut release: ReleaseDetail = serde_json::from_str(&data).ok()?;
+    normalize_release(&mut release);
+    Some(release)
+}
+
+fn normalize_component(component: &mut Component) {
+    if is_language_pack(&component.id, component.category.as_deref()) {
+        component.required = false;
+        component.pre_selected = false;
+    }
+    for child in &mut component.sub_modules {
+        normalize_component(child);
+    }
+}
+
+fn normalize_release(release: &mut ReleaseDetail) {
+    for component in &mut release.modules {
+        normalize_component(component);
+    }
 }
 
 fn write_cached_release(cache_dir: &Path, release: &ReleaseDetail) -> Result<(), String> {
