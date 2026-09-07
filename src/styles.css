@@ -106,6 +106,10 @@ h2 { margin-top: 7px; font-size: 16px; letter-spacing: -.02em; }
 .cache-pill { min-width: 53px; color: #70808d; }
 .cache-pill.ready { color: var(--accent); }
 .cache-pill.partial { color: var(--orange); }
+.cache-pill.installed { color: #9edb78; }
+.module-action { padding: 4px 7px; border: 1px solid #465947; border-radius: 4px; color: #afd791; background: transparent; cursor: pointer; font: 9px "DM Mono", monospace; }
+.module-action:hover { border-color: #8ebd70; color: #d6f5bf; }
+.module-action:disabled { cursor: wait; opacity: .55; }
 .components-foot { display: flex; justify-content: space-between; padding: 13px 24px; color: #63707c; font-size: 10px; }
 .legend-dot { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--accent); }
 .empty-state { padding: 38px; color: var(--muted); text-align: center; font-size: 12px; }

@@ -67,6 +67,8 @@ interface CacheStatus {
   exists: boolean;
   size: number;
   complete: boolean;
+  installed: boolean;
+  uninstallable: boolean;
 }
 
 interface AppDefaults {
@@ -86,6 +88,7 @@ const state = {
   loadingVersions: false,
   loadingRelease: false,
   installing: false,
+  uninstalling: new Set<string>(),
   progress: null as ProgressEvent | null,
   error: "",
   logs: [] as string[],
@@ -144,14 +147,16 @@ function isLanguagePack(node: Component): boolean {
 
 function packageCount(): number {
   if (!state.release) return 0;
-  return 1 + [...state.selectedIds].filter((id) => componentById(id)).length;
+  const editorCount = state.cache.editor?.installed ? 0 : 1;
+  return editorCount + [...state.selectedIds].filter((id) => componentById(id) && !state.cache[id]?.installed).length;
 }
 
 function selectedSize(): number {
   if (!state.release) return 0;
   return [...state.selectedIds]
+    .filter((id) => !state.cache[id]?.installed)
     .map((id) => componentById(id)?.size ?? 0)
-    .reduce((total, size) => total + size, state.release.editor.size ?? 0);
+    .reduce((total, size) => total + size, state.cache.editor?.installed ? 0 : (state.release.editor.size ?? 0));
 }
 
 function addLog(message: string): void {
@@ -170,6 +175,7 @@ async function refreshCache(): Promise<void> {
     state.cache = await invoke<Record<string, CacheStatus>>("cache_status", {
       release: state.release,
       cacheDir: state.cacheDir,
+      installDir: state.installDir,
     });
     render();
   } catch (error) {
@@ -247,7 +253,12 @@ function renderComponent(node: Component, depth = 0): string {
   const cached = state.cache[node.id];
   const children = (node.subModules ?? []).map((child) => renderComponent(child, depth + 1)).join("");
   const indent = Math.min(depth, 3) * 20;
-  const cacheLabel = cached?.complete ? "已缓存" : cached?.exists ? "未完成" : "在线下载";
+  const cacheLabel = cached?.installed ? "已安装" : cached?.complete ? "已缓存" : cached?.exists ? "未完成" : "在线下载";
+  const cacheClass = cached?.installed ? "installed" : cached?.complete ? "ready" : cached?.exists ? "partial" : "";
+  const uninstalling = state.uninstalling.has(node.id);
+  const uninstall = cached?.installed && cached.uninstallable
+    ? `<button class="module-action" type="button" data-uninstall-id="${escapeHtml(node.id)}" ${state.installing || uninstalling ? "disabled" : ""}>${uninstalling ? "卸载中…" : "卸载"}</button>`
+    : "";
   return `
     <div class="component-row ${depth ? "nested" : ""}" style="--indent:${indent}px">
       <label class="component-check">
@@ -261,7 +272,7 @@ function renderComponent(node: Component, depth = 0): string {
       </div>
       <div class="component-meta">
         <span>${formatBytes(node.size)}</span>
-        <span class="cache-pill ${cached?.complete ? "ready" : cached?.exists ? "partial" : ""}">${cacheLabel}</span>
+        <span class="cache-pill ${cacheClass}">${cacheLabel}</span>${uninstall}
       </div>
     </div>
     ${children}`;
@@ -269,13 +280,14 @@ function renderComponent(node: Component, depth = 0): string {
 
 function renderEditor(packageInfo: PackageInfo): string {
   const cached = state.cache.editor;
-  const cacheLabel = cached?.complete ? "已缓存" : cached?.exists ? "未完成" : "在线下载";
+  const cacheLabel = cached?.installed ? "已安装" : cached?.complete ? "已缓存" : cached?.exists ? "未完成" : "在线下载";
+  const cacheClass = cached?.installed ? "installed" : cached?.complete ? "ready" : cached?.exists ? "partial" : "";
   return `
     <div class="component-row">
       <label class="component-check"><input type="checkbox" checked disabled><span class="checkmark"></span></label>
       <div class="component-icon editor">U</div>
       <div class="component-copy"><div class="component-title">${escapeHtml(packageInfo.name)} <span class="required">核心</span></div><div class="component-description">Windows x86_64 Editor 安装程序</div></div>
-      <div class="component-meta"><span>${formatBytes(packageInfo.size)}</span><span class="cache-pill ${cached?.complete ? "ready" : cached?.exists ? "partial" : ""}">${cacheLabel}</span></div>
+      <div class="component-meta"><span>${formatBytes(packageInfo.size)}</span><span class="cache-pill ${cacheClass}">${cacheLabel}</span></div>
     </div>`;
 }
 
@@ -297,7 +309,7 @@ function renderProgress(): string {
 function render(): void {
   const release = state.release;
   const selectedSizeText = selectedSize() ? formatBytes(selectedSize()) : "—";
-  const canInstall = Boolean(release && state.installDir.trim() && !state.installing && state.selectedIds.size >= 0);
+  const canInstall = Boolean(release && state.installDir.trim() && !state.installing && state.uninstalling.size === 0 && packageCount() > 0);
   app.innerHTML = `
     <div class="shell">
       <aside class="sidebar">
@@ -334,7 +346,7 @@ function render(): void {
             ${release ? renderEditor(release.editor) : ""}
             ${release ? release.modules.filter((item) => !item.hidden).map((item) => renderComponent(item)).join("") : '<div class="empty-state">组件会显示在这里</div>'}
           </div>
-          <div class="components-foot"><span><span class="legend-dot"></span>已缓存的组件会自动跳过下载</span><span>语言包可单独选择</span></div>
+          <div class="components-foot"><span><span class="legend-dot"></span>已缓存或已安装的组件会自动跳过处理</span><span>语言包可单独选择</span></div>
         </section>
         <section class="panel progress-panel"><div class="progress-title"><div><div class="panel-label">03 · 下载与安装</div><h2>安装进度</h2></div><div class="progress-mode ${state.offline ? "offline" : ""}">${state.offline ? "离线缓存" : "可断点续传"}</div></div>${renderProgress()}${state.logs.length ? `<div class="logs">${state.logs.map((log) => `<div>${escapeHtml(log)}</div>`).join("")}</div>` : ""}</section>
         <footer class="action-bar"><div class="action-info"><span class="action-count">${packageCount()}</span><span>个安装包将被处理</span></div><button class="secondary-button" id="cancel-button" ${state.installing ? "" : "disabled"}>取消</button><button class="primary-button" id="install-button" ${canInstall ? "" : "disabled"}>${state.installing ? "安装中…" : state.offline ? "开始离线安装" : "下载并安装"}<span>→</span></button></footer>
@@ -351,6 +363,7 @@ function bindEvents(): void {
   });
   document.querySelector<HTMLInputElement>("#install-dir")?.addEventListener("change", (event) => {
     state.installDir = (event.target as HTMLInputElement).value;
+    void refreshCache();
   });
   document.querySelector<HTMLInputElement>("#cache-dir")?.addEventListener("change", (event) => {
     state.cacheDir = (event.target as HTMLInputElement).value;
@@ -371,12 +384,39 @@ function bindEvents(): void {
       }
     });
   });
+  document.querySelectorAll<HTMLButtonElement>("[data-uninstall-id]").forEach((button) => {
+    button.addEventListener("click", () => void uninstallModule(button.dataset.uninstallId || ""));
+  });
   document.querySelector<HTMLButtonElement>("#install-button")?.addEventListener("click", () => void startInstall());
   document.querySelector<HTMLButtonElement>("#cancel-button")?.addEventListener("click", () => void cancelInstall());
 }
 
+async function uninstallModule(moduleId: string): Promise<void> {
+  if (!moduleId || !state.release || !isTauri() || state.installing || state.uninstalling.has(moduleId)) return;
+  const node = componentById(moduleId);
+  if (!node || !window.confirm(`确定卸载“${node.name || moduleId}”？`)) return;
+  state.uninstalling.add(moduleId);
+  state.error = "";
+  render();
+  try {
+    await invoke("uninstall_module", {
+      release: state.release,
+      moduleId,
+      destination: state.installDir.trim(),
+    });
+    addLog(`已卸载：${node.name || moduleId}`);
+    await refreshCache();
+  } catch (error) {
+    state.error = String(error);
+    addLog(`卸载失败：${String(error)}`);
+  } finally {
+    state.uninstalling.delete(moduleId);
+    render();
+  }
+}
+
 async function startInstall(): Promise<void> {
-  if (!state.release || !state.installDir.trim() || state.installing) return;
+  if (!state.release || !state.installDir.trim() || state.installing || state.uninstalling.size > 0) return;
   if (!isTauri()) {
     state.error = "请使用 `npm run tauri dev` 启动桌面应用后执行安装。";
     render();
@@ -424,6 +464,7 @@ async function setupEvents(): Promise<void> {
       state.installing = false;
       if (event.payload.message) addLog(event.payload.message);
       if (event.payload.phase === "failed") state.error = event.payload.message || "安装失败";
+      if (event.payload.phase === "done") void refreshCache();
     }
     render();
   });

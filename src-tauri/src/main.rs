@@ -111,6 +111,8 @@ struct CacheStatus {
     exists: bool,
     size: u64,
     complete: bool,
+    installed: bool,
+    uninstallable: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -531,6 +533,118 @@ fn resolve_path(template: Option<&str>, unity_path: &Path) -> PathBuf {
     PathBuf::from(value)
 }
 
+fn module_manifest_status(unity_path: &Path, module_id: &str) -> Option<bool> {
+    let path = unity_path.join("modules.json");
+    let data = fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&data).ok()?;
+    let modules = value.as_array()
+        .or_else(|| value.get("modules").and_then(Value::as_array))?;
+    modules.iter()
+        .find(|module| text_field(module, "id") == module_id)
+        .and_then(|module| module.get("isInstalled").and_then(Value::as_bool))
+}
+
+fn playback_engine_path(unity_path: &Path, directory: &str) -> PathBuf {
+    unity_path.join("Editor").join("Data").join("PlaybackEngines").join(directory)
+}
+
+fn module_install_paths(package: &PackageInfo, unity_path: &Path) -> Vec<PathBuf> {
+    let id = package.id.to_ascii_lowercase();
+    if let Some(language) = id.strip_prefix("language-") {
+        return vec![unity_path.join("Editor").join("Data").join("Localization").join(format!("{language}.po"))];
+    }
+    if id == "editor" {
+        return vec![unity_path.join("Editor").join("Unity.exe")];
+    }
+    if id == "android" {
+        return vec![playback_engine_path(unity_path, "AndroidPlayer")];
+    }
+    if id.starts_with("android-open-jdk-") {
+        return vec![playback_engine_path(unity_path, "AndroidPlayer").join("OpenJDK")];
+    }
+    if id == "android-sdk-ndk-tools" {
+        return vec![playback_engine_path(unity_path, "AndroidPlayer").join("SDK")];
+    }
+    if id.starts_with("android-ndk-") {
+        return vec![playback_engine_path(unity_path, "AndroidPlayer").join("NDK")];
+    }
+    if let Some(version) = id.strip_prefix("android-sdk-build-tools-") {
+        return vec![playback_engine_path(unity_path, "AndroidPlayer").join("SDK").join("build-tools").join(version)];
+    }
+    if id.starts_with("android-sdk-platform-tools-") {
+        return vec![playback_engine_path(unity_path, "AndroidPlayer").join("SDK").join("platform-tools")];
+    }
+    if let Some(version) = id.strip_prefix("android-sdk-platforms-") {
+        return vec![playback_engine_path(unity_path, "AndroidPlayer").join("SDK").join("platforms").join(format!("android-{version}"))];
+    }
+    if let Some(version) = id.strip_prefix("android-sdk-command-line-tools-") {
+        return vec![playback_engine_path(unity_path, "AndroidPlayer").join("SDK").join("cmdline-tools").join(version)];
+    }
+    let playback = match id.as_str() {
+        "linux-il2cpp" | "linux-mono" | "linux-server" => Some("LinuxStandaloneSupport"),
+        "windows-il2cpp" | "windows-mono" | "windows-server" => Some("windowsstandalonesupport"),
+        "webgl" => Some("WebGLSupport"),
+        "ios" => Some("iOSSupport"),
+        "mac-mono" | "mac-server" => Some("MacStandaloneSupport"),
+        "universal-windows-platform" => Some("MetroSupport"),
+        "visionos" => Some("VisionOSSupport"),
+        _ => None,
+    };
+    if let Some(directory) = playback {
+        return vec![playback_engine_path(unity_path, directory)];
+    }
+    if id == "documentation" {
+        return vec![unity_path.join("Editor").join("Data").join("Documentation")];
+    }
+    let destination = resolve_path(package.destination.as_deref(), unity_path);
+    if destination != unity_path && destination != PathBuf::from("{UNITY_PATH}") {
+        vec![destination]
+    } else {
+        Vec::new()
+    }
+}
+
+fn package_is_installed(package: &PackageInfo, unity_path: &Path) -> bool {
+    if module_manifest_status(unity_path, &package.id) == Some(true) {
+        return true;
+    }
+    module_install_paths(package, unity_path).iter().any(|path| path.exists())
+}
+
+fn module_uninstall_path(package: &PackageInfo, unity_path: &Path) -> Option<PathBuf> {
+    let id = package.id.to_ascii_lowercase();
+    if id == "editor" || id == "visualstudio" || id.contains("visualstudio") || id == "android-sdk-ndk-tools" {
+        return None;
+    }
+    let supported = id.starts_with("language-")
+        || matches!(id.as_str(),
+            "android" | "ios" | "webgl" | "linux-il2cpp" | "linux-mono" | "linux-server"
+            | "windows-il2cpp" | "windows-mono" | "windows-server" | "mac-mono" | "mac-server"
+            | "universal-windows-platform" | "visionos" | "documentation")
+        || id.starts_with("android-open-jdk-")
+        || id.starts_with("android-ndk-")
+        || id.starts_with("android-sdk-build-tools-")
+        || id.starts_with("android-sdk-platform-tools-")
+        || id.starts_with("android-sdk-platforms-")
+        || id.starts_with("android-sdk-command-line-tools-");
+    supported.then(|| module_install_paths(package, unity_path).into_iter().next()).flatten()
+}
+
+fn find_component<'a>(nodes: &'a [Component], id: &str) -> Option<&'a Component> {
+    for node in nodes {
+        if node.id == id { return Some(node); }
+        if let Some(found) = find_component(&node.sub_modules, id) { return Some(found); }
+    }
+    None
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 fn safe_child(root: &Path, path: &Path) -> Result<(), String> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let candidate = if path.exists() { path.canonicalize() } else {
@@ -629,26 +743,46 @@ fn perform_install(app: AppHandle, request: InstallRequest, state: InstallState)
     if !request.offline {
         write_cached_release(&cache_root, &request.release)?;
     }
-    let packages = selected_packages(&request.release, &request.selected_ids);
-    let total_items = packages.len();
-    let mut files = Vec::with_capacity(total_items);
-    for (index, package) in packages.iter().enumerate() {
-        let file = download_package(&app, package, &cache_root.join(&request.release.version), request.offline, &state.cancel, index, total_items)?;
+    let selected = selected_packages(&request.release, &request.selected_ids);
+    let total_items = selected.len();
+    let mut pending = Vec::with_capacity(total_items);
+    let mut completed_items = 0;
+    for package in selected {
+        if package_is_installed(&package, &unity_path) {
+            emit_progress(&app, ProgressEvent {
+                phase: "install".to_string(), item_id: Some(package.id.clone()), item_name: Some(package.name.clone()),
+                downloaded: 0, total: None, completed_items, total_items,
+                status: "已安装，跳过".to_string(), message: None,
+            });
+            completed_items += 1;
+        } else {
+            pending.push(package);
+        }
+    }
+    let mut files = Vec::with_capacity(pending.len());
+    for package in &pending {
+        let file = download_package(&app, package, &cache_root.join(&request.release.version), request.offline, &state.cancel, completed_items, total_items)?;
         files.push((package.clone(), file));
     }
-    for (index, (package, file)) in files.iter().enumerate() {
+    for (package, file) in files.iter() {
         if state.cancel.load(Ordering::Relaxed) { return Err("安装已取消".to_string()); }
         emit_progress(&app, ProgressEvent {
             phase: "install".to_string(), item_id: Some(package.id.clone()), item_name: Some(package.name.clone()),
-            downloaded: 0, total: None, completed_items: index, total_items,
+            downloaded: 0, total: None, completed_items, total_items,
             status: "正在安装".to_string(), message: None,
         });
         install_package(package, file, &unity_path, &state.cancel)?;
+        completed_items += 1;
     }
     emit_progress(&app, ProgressEvent {
         phase: "done".to_string(), item_id: None, item_name: None, downloaded: 0, total: None,
-        completed_items: total_items, total_items, status: "安装完成".to_string(),
-        message: Some(format!("Unity {} 已安装到 {}", request.release.version, unity_path.display())),
+        completed_items, total_items,
+        status: if pending.is_empty() { "没有需要安装的组件".to_string() } else { "安装完成".to_string() },
+        message: Some(if pending.is_empty() {
+            format!("Unity {} 的所选组件均已安装，未重复处理", request.release.version)
+        } else {
+            format!("Unity {} 已安装到 {}", request.release.version, unity_path.display())
+        }),
     });
     Ok(())
 }
@@ -705,8 +839,9 @@ fn get_release(version: String, cache_dir: Option<String>) -> Result<ReleaseDeta
 }
 
 #[tauri::command]
-fn cache_status(release: ReleaseDetail, cache_dir: String) -> Result<HashMap<String, CacheStatus>, String> {
+fn cache_status(release: ReleaseDetail, cache_dir: String, install_dir: Option<String>) -> Result<HashMap<String, CacheStatus>, String> {
     let root = PathBuf::from(cache_dir).join(&release.version);
+    let unity_path = install_dir.map(PathBuf::from);
     let mut all_nodes = Vec::new();
     flatten_components(&release.modules, &mut all_nodes);
     let mut packages = vec![release.editor.clone()];
@@ -718,7 +853,15 @@ fn cache_status(release: ReleaseDetail, cache_dir: String) -> Result<HashMap<Str
         let part = root.join(format!("{filename}.part"));
         let legacy = find_legacy_package_by_size(&package, &root, &filename);
         let size = fs::metadata(&target).map(|item| item.len()).or_else(|_| fs::metadata(&part).map(|item| item.len())).unwrap_or(0);
-        result.insert(package.id, CacheStatus { exists: size > 0 || legacy.is_some(), size, complete: is_complete(&target, package.size) || legacy.is_some() });
+        let installed = unity_path.as_deref().is_some_and(|path| package_is_installed(&package, path));
+        let uninstallable = installed && unity_path.as_deref().and_then(|path| module_uninstall_path(&package, path)).is_some();
+        result.insert(package.id, CacheStatus {
+            exists: size > 0 || legacy.is_some(),
+            size,
+            complete: is_complete(&target, package.size) || legacy.is_some(),
+            installed,
+            uninstallable,
+        });
     }
     Ok(result)
 }
@@ -747,10 +890,43 @@ fn cancel_install(state: State<'_, InstallState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn uninstall_module(state: State<'_, InstallState>, release: ReleaseDetail, module_id: String, destination: String) -> Result<(), String> {
+    if destination.trim().is_empty() { return Err("安装目录不能为空".to_string()); }
+    if state.running.swap(true, Ordering::SeqCst) { return Err("已有安装任务正在运行".to_string()); }
+    let result = (|| {
+        let unity_path = PathBuf::from(destination);
+        let component = find_component(&release.modules, &module_id).ok_or_else(|| format!("找不到组件：{module_id}"))?;
+        let package = component_as_package(component);
+        let path = module_uninstall_path(&package, &unity_path).ok_or_else(|| "该模块没有可安全卸载的目录，请使用 Unity Hub 或原安装器卸载".to_string())?;
+        let mut all_nodes = Vec::new();
+        flatten_components(&release.modules, &mut all_nodes);
+        if all_nodes.iter().any(|other| {
+            other.id != module_id
+                && package_is_installed(&component_as_package(other), &unity_path)
+                && module_uninstall_path(&component_as_package(other), &unity_path)
+                    .is_some_and(|other_path| paths_equal(&path, &other_path))
+        }) {
+            return Err("该模块与其他已安装模块共用目录，请先卸载相关模块".to_string());
+        }
+        safe_child(&unity_path, &path)?;
+        if path.is_dir() {
+            fs::remove_dir_all(&path).map_err(|error| format!("卸载模块失败：{error}"))?;
+        } else if path.is_file() {
+            fs::remove_file(&path).map_err(|error| format!("卸载模块失败：{error}"))?;
+        } else {
+            return Err("模块安装路径不存在".to_string());
+        }
+        Ok(())
+    })();
+    state.running.store(false, Ordering::SeqCst);
+    result
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(InstallState { running: Arc::new(AtomicBool::new(false)), cancel: Arc::new(AtomicBool::new(false)) })
-        .invoke_handler(tauri::generate_handler![get_defaults, list_versions, get_release, cache_status, start_install, cancel_install])
+        .invoke_handler(tauri::generate_handler![get_defaults, list_versions, get_release, cache_status, start_install, cancel_install, uninstall_module])
         .run(tauri::generate_context!())
         .expect("error while running Unity Hub Lite");
 }
