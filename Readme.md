@@ -15,6 +15,13 @@ npm run tauri dev
 npm run tauri build
 ```
 
+如果 Tauri CLI 报 `called Option::unwrap() on a None value`，通常是 Rust 工具链未完成安装。项目脚本会先检查工具链并给出具体错误；修复后重试：
+
+```powershell
+rustup toolchain install stable --profile minimal
+npm run tauri build
+```
+
 缓存按 `缓存目录/<Unity版本>/` 保存，未完成的下载保留为 `.part` 文件。勾选“仅使用本地缓存（离线安装）”后不会访问网络；Editor 元数据也会从同一目录的 `release.json` 回退读取。
 
 ## 用途
