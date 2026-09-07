@@ -47,6 +47,7 @@ interface ReleaseDetail {
 interface InstallRequest {
   release: ReleaseDetail;
   selectedIds: string[];
+  uninstallIds: string[];
   destination: string;
   cacheDir: string;
   offline: boolean;
@@ -82,6 +83,7 @@ const state = {
   selectedVersion: "",
   release: null as ReleaseDetail | null,
   selectedIds: new Set<string>(),
+  pendingUninstall: new Set<string>(),
   cache: {} as Record<string, CacheStatus>,
   cacheDir: "",
   installDir: "",
@@ -178,6 +180,11 @@ async function refreshCache(): Promise<void> {
       cacheDir: state.cacheDir,
       installDir: state.installDir,
     });
+    // Installed components mirror their real state: always selected unless queued for uninstall.
+    for (const node of allComponents(state.release.modules)) {
+      if (!state.cache[node.id]?.installed) state.pendingUninstall.delete(node.id);
+      else if (!state.pendingUninstall.has(node.id)) state.selectedIds.add(node.id);
+    }
     render();
   } catch (error) {
     addLog(`无法读取缓存：${String(error)}`);
@@ -227,6 +234,7 @@ async function loadRelease(version: string, rerender = true): Promise<void> {
       if (detected) state.installDir = detected;
     }
     state.selectedIds = new Set();
+    state.pendingUninstall = new Set();
     for (const component of state.release.modules) {
       if (component.preSelected || component.required) setSelectedTree(component, true);
     }
@@ -258,8 +266,9 @@ function renderComponent(node: Component, depth = 0): string {
   const cached = state.cache[node.id];
   const children = (node.subModules ?? []).map((child) => renderComponent(child, depth + 1)).join("");
   const indent = Math.min(depth, 3) * 20;
-  const cacheLabel = cached?.installed ? "已安装" : cached?.complete ? "已缓存" : cached?.exists ? "未完成" : "在线下载";
-  const cacheClass = cached?.installed ? "installed" : cached?.complete ? "ready" : cached?.exists ? "partial" : "";
+  const pending = state.pendingUninstall.has(node.id);
+  const cacheLabel = pending ? "待卸载" : cached?.installed ? "已安装" : cached?.complete ? "已缓存" : cached?.exists ? "未完成" : "在线下载";
+  const cacheClass = pending ? "partial" : cached?.installed ? "installed" : cached?.complete ? "ready" : cached?.exists ? "partial" : "";
   const uninstalling = state.uninstalling.has(node.id);
   const uninstall = cached?.installed && cached.uninstallable
     ? `<button class="module-action" type="button" data-uninstall-id="${escapeHtml(node.id)}" ${state.installing || uninstalling ? "disabled" : ""}>${uninstalling ? "卸载中…" : "卸载"}</button>`
@@ -305,7 +314,7 @@ function renderProgress(): string {
   const overall = progress.totalItems > 0 ? (progress.completedItems / progress.totalItems) * 100 : 0;
   const label = progress.itemName || progress.message || "准备中";
   return `
-    <div class="progress-heading"><span>${escapeHtml(label)}</span><strong>${progress.phase === "install" ? "安装中" : progress.phase === "done" ? "完成" : `${percent.toFixed(1)}%`}</strong></div>
+    <div class="progress-heading"><span>${escapeHtml(label)}</span><strong>${progress.phase === "install" ? "安装中" : progress.phase === "uninstall" ? "卸载中" : progress.phase === "done" ? "完成" : `${percent.toFixed(1)}%`}</strong></div>
     <div class="progress-track"><span style="width:${progress.phase === "install" ? "100" : percent}%"></span></div>
     <div class="progress-subline"><span>${escapeHtml(progress.status || "")}</span><span>${progress.completedItems}/${progress.totalItems} 个文件</span></div>
     <div class="overall-track"><span style="width:${overall}%"></span></div>`;
@@ -314,7 +323,7 @@ function renderProgress(): string {
 function render(): void {
   const release = state.release;
   const selectedSizeText = selectedSize() ? formatBytes(selectedSize()) : "—";
-  const canInstall = Boolean(release && state.installDir.trim() && !state.installing && state.uninstalling.size === 0 && packageCount() > 0);
+  const canInstall = Boolean(release && state.installDir.trim() && !state.installing && state.uninstalling.size === 0 && (packageCount() > 0 || state.pendingUninstall.size > 0));
   app.innerHTML = `
     <div class="shell">
       <aside class="sidebar">
@@ -351,10 +360,10 @@ function render(): void {
             ${release ? renderEditor(release.editor) : ""}
             ${release ? release.modules.filter((item) => !item.hidden).map((item) => renderComponent(item)).join("") : '<div class="empty-state">组件会显示在这里</div>'}
           </div>
-          <div class="components-foot"><span><span class="legend-dot"></span>已缓存或已安装的组件会自动跳过处理</span><span>语言包可单独选择</span></div>
+          <div class="components-foot"><span><span class="legend-dot"></span>已安装的组件保持选中，取消勾选即卸载</span><span>语言包可单独选择</span></div>
         </section>
         <section class="panel progress-panel"><div class="progress-title"><div><div class="panel-label">03 · 下载与安装</div><h2>安装进度</h2></div><div class="progress-mode ${state.offline ? "offline" : ""}">${state.offline ? "离线缓存" : "可断点续传"}</div></div>${renderProgress()}${state.logs.length ? `<div class="logs">${state.logs.map((log) => `<div>${escapeHtml(log)}</div>`).join("")}</div>` : ""}</section>
-        <footer class="action-bar"><div class="action-info"><span class="action-count">${packageCount()}</span><span>个安装包将被处理</span></div><button class="secondary-button" id="cancel-button" ${state.installing ? "" : "disabled"}>取消</button><button class="primary-button" id="install-button" ${canInstall ? "" : "disabled"}>${state.installing ? "安装中…" : state.offline ? "开始离线安装" : "下载并安装"}<span>→</span></button></footer>
+<footer class="action-bar"><div class="action-info"><span class="action-count">${packageCount()}</span><span>个安装包将被处理</span>${state.pendingUninstall.size ? ` <span class="action-count">${state.pendingUninstall.size}</span><span>个组件将卸载</span>` : ""}</div><button class="secondary-button" id="cancel-button" ${state.installing ? "" : "disabled"}>取消</button><button class="primary-button" id="install-button" ${canInstall ? "" : "disabled"}>${state.installing ? "处理中…" : state.offline ? "开始离线安装" : "下载并安装"}<span>→</span></button></footer>
       </main>
     </div>`;
   bindEvents();
@@ -385,6 +394,8 @@ function bindEvents(): void {
       const input = event.target as HTMLInputElement;
       const node = componentById(input.dataset.componentId || "");
       if (node) {
+        if (!input.checked && state.cache[node.id]?.installed) state.pendingUninstall.add(node.id);
+        if (input.checked) state.pendingUninstall.delete(node.id);
         setSelectedTree(node, input.checked);
         void refreshCache();
         render();
@@ -397,6 +408,7 @@ function bindEvents(): void {
   document.querySelector<HTMLButtonElement>("#install-button")?.addEventListener("click", () => void startInstall());
   document.querySelector<HTMLButtonElement>("#cancel-button")?.addEventListener("click", () => void cancelInstall());
 }
+
 
 async function browseFolder(target: "install" | "cache"): Promise<void> {
   if (!isTauri()) return;
@@ -440,6 +452,8 @@ async function startInstall(): Promise<void> {
     render();
     return;
   }
+  const pendingNames = [...state.pendingUninstall].map((id) => componentById(id)?.name || id);
+  if (pendingNames.length > 0 && !window.confirm(`将卸载以下组件：\n${pendingNames.join("\n")}\n\n是否继续？`)) return;
   state.installing = true;
   state.error = "";
   state.progress = null;
@@ -449,6 +463,7 @@ async function startInstall(): Promise<void> {
   const request: InstallRequest = {
     release: state.release,
     selectedIds: [...state.selectedIds],
+    uninstallIds: [...state.pendingUninstall],
     destination: state.installDir.trim(),
     cacheDir: state.cacheDir.trim(),
     offline: state.offline,
@@ -480,6 +495,7 @@ async function setupEvents(): Promise<void> {
     state.progress = event.payload;
     if (["done", "failed", "cancelled"].includes(event.payload.phase)) {
       state.installing = false;
+      if (event.payload.phase === "done") state.pendingUninstall.clear();
       if (event.payload.message) addLog(event.payload.message);
       if (event.payload.phase === "failed") state.error = event.payload.message || "安装失败";
       if (event.payload.phase === "done") void refreshCache();

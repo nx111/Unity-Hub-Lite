@@ -87,6 +87,7 @@ struct ReleaseDetail {
 struct InstallRequest {
     release: ReleaseDetail,
     selected_ids: Vec<String>,
+    uninstall_ids: Vec<String>,
     destination: String,
     cache_dir: String,
     offline: bool,
@@ -849,9 +850,20 @@ fn perform_install(app: AppHandle, request: InstallRequest, state: InstallState)
         write_cached_release(&cache_root, &request.release)?;
     }
     let selected = selected_packages(&request.release, &request.selected_ids);
-    let total_items = selected.len();
+    let total_items = selected.len() + request.uninstall_ids.len();
     let mut pending = Vec::with_capacity(total_items);
     let mut completed_items = 0;
+    for module_id in &request.uninstall_ids {
+        if state.cancel.load(Ordering::Relaxed) { return Err("安装已取消".to_string()); }
+        let name = find_component(&request.release.modules, module_id).map(|item| item.name.clone()).unwrap_or_else(|| module_id.clone());
+        emit_progress(&app, ProgressEvent {
+            phase: "uninstall".to_string(), item_id: Some(module_id.clone()), item_name: Some(name),
+            downloaded: 0, total: None, completed_items, total_items,
+            status: "正在卸载".to_string(), message: None,
+        });
+        uninstall_component(&request.release, &unity_path, module_id)?;
+        completed_items += 1;
+    }
     for package in selected {
         if package_is_installed(&package, &unity_path) {
             emit_progress(&app, ProgressEvent {
@@ -1004,33 +1016,34 @@ fn cancel_install(state: State<'_, InstallState>) -> Result<(), String> {
 fn uninstall_module(state: State<'_, InstallState>, release: ReleaseDetail, module_id: String, destination: String) -> Result<(), String> {
     if destination.trim().is_empty() { return Err("安装目录不能为空".to_string()); }
     if state.running.swap(true, Ordering::SeqCst) { return Err("已有安装任务正在运行".to_string()); }
-    let result = (|| {
-        let unity_path = PathBuf::from(destination);
-        let component = find_component(&release.modules, &module_id).ok_or_else(|| format!("找不到组件：{module_id}"))?;
-        let package = component_as_package(component);
-        let path = module_uninstall_path(&package, &unity_path).ok_or_else(|| "该模块没有可安全卸载的目录，请使用 Unity Hub 或原安装器卸载".to_string())?;
-        let mut all_nodes = Vec::new();
-        flatten_components(&release.modules, &mut all_nodes);
-        if all_nodes.iter().any(|other| {
-            other.id != module_id
-                && package_is_installed(&component_as_package(other), &unity_path)
-                && module_uninstall_path(&component_as_package(other), &unity_path)
-                    .is_some_and(|other_path| paths_equal(&path, &other_path))
-        }) {
-            return Err("该模块与其他已安装模块共用目录，请先卸载相关模块".to_string());
-        }
-        safe_child(&unity_path, &path)?;
-        if path.is_dir() {
-            fs::remove_dir_all(&path).map_err(|error| format!("卸载模块失败：{error}"))?;
-        } else if path.is_file() {
-            fs::remove_file(&path).map_err(|error| format!("卸载模块失败：{error}"))?;
-        } else {
-            return Err("模块安装路径不存在".to_string());
-        }
-        Ok(())
-    })();
+    let result = uninstall_component(&release, Path::new(&destination), &module_id);
     state.running.store(false, Ordering::SeqCst);
     result
+}
+
+fn uninstall_component(release: &ReleaseDetail, unity_path: &Path, module_id: &str) -> Result<(), String> {
+    let component = find_component(&release.modules, module_id).ok_or_else(|| format!("找不到组件：{module_id}"))?;
+    let package = component_as_package(component);
+    let path = module_uninstall_path(&package, unity_path).ok_or_else(|| "该模块没有可安全卸载的目录，请使用 Unity Hub 或原安装器卸载".to_string())?;
+    let mut all_nodes = Vec::new();
+    flatten_components(&release.modules, &mut all_nodes);
+    if all_nodes.iter().any(|other| {
+        other.id != module_id
+            && package_is_installed(&component_as_package(other), unity_path)
+            && module_uninstall_path(&component_as_package(other), unity_path)
+                .is_some_and(|other_path| paths_equal(&path, &other_path))
+    }) {
+        return Err("该模块与其他已安装模块共用目录，请先卸载相关模块".to_string());
+    }
+    safe_child(unity_path, &path)?;
+    if path.is_dir() {
+        fs::remove_dir_all(&path).map_err(|error| format!("卸载模块失败：{error}"))?;
+    } else if path.is_file() {
+        fs::remove_file(&path).map_err(|error| format!("卸载模块失败：{error}"))?;
+    } else {
+        return Err("模块安装路径不存在".to_string());
+    }
+    Ok(())
 }
 
 fn main() {
