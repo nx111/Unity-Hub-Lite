@@ -420,11 +420,16 @@ fn download_package(
         }
         return Ok(legacy);
     }
+    let mut existing = fs::metadata(&part).map(|metadata| metadata.len()).unwrap_or(0);
     if offline {
+        if package.size == Some(existing) {
+            verify_integrity(&part, package.size, package.integrity.as_deref())?;
+            fs::rename(&part, &target).map_err(|error| format!("完成离线缓存文件失败：{error}"))?;
+            return Ok(target);
+        }
         return Err(format!("离线缓存缺少 {}（{}）", package.name, filename));
     }
 
-    let mut existing = fs::metadata(&part).map(|metadata| metadata.len()).unwrap_or(0);
     if let Some(expected) = package.size {
         if existing == expected {
             verify_integrity(&part, package.size, package.integrity.as_deref())?;
