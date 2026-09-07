@@ -1,4 +1,4 @@
-# Install-Unity-Offline.ps1 使用说明
+# Unity Hub Lite
 
 ## Unity Hub Lite（Tauri 桌面版）
 

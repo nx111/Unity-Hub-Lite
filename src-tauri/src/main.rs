@@ -45,6 +45,7 @@ struct PackageInfo {
     destination: Option<String>,
     rename_from: Option<String>,
     rename_to: Option<String>,
+    command: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -61,6 +62,7 @@ struct Component {
     destination: Option<String>,
     rename_from: Option<String>,
     rename_to: Option<String>,
+    command: Option<String>,
     required: bool,
     hidden: bool,
     pre_selected: bool,
@@ -177,6 +179,7 @@ fn parse_component(value: &Value) -> Component {
         destination: optional_text(value, "destination"),
         rename_from: rename.and_then(|v| optional_text(v, "from")),
         rename_to: rename.and_then(|v| optional_text(v, "to")),
+        command: optional_text(value, "cmd"),
         required: value.get("required").and_then(Value::as_bool).unwrap_or(false),
         hidden: value.get("hidden").and_then(Value::as_bool).unwrap_or(false),
         pre_selected: value.get("preSelected").and_then(Value::as_bool).unwrap_or(false),
@@ -210,6 +213,7 @@ fn parse_release(value: &Value) -> Result<ReleaseDetail, String> {
             destination: Some("{UNITY_PATH}".to_string()),
             rename_from: None,
             rename_to: None,
+            command: None,
         },
         modules,
     })
@@ -278,6 +282,7 @@ fn component_as_package(component: &Component) -> PackageInfo {
         destination: component.destination.clone(),
         rename_from: component.rename_from.clone(),
         rename_to: component.rename_to.clone(),
+        command: component.command.clone(),
     }
 }
 
@@ -534,10 +539,13 @@ fn install_package(package: &PackageInfo, file: &Path, unity_path: &Path, cancel
     fs::create_dir_all(&destination).map_err(|error| format!("创建安装目录失败：{error}"))?;
     match package.kind.to_ascii_uppercase().as_str() {
         "EXE" => {
-            let status = Command::new(file)
-                .arg("/S")
-                .arg(format!("/D={}", destination.display()))
-                .status()
+            let mut command = Command::new(file);
+            if let Some(arguments) = package.command.as_deref().map(command_arguments).filter(|args| !args.is_empty()) {
+                command.args(arguments.into_iter().skip(1));
+            } else {
+                command.arg("/S").arg(format!("/D={}", destination.display()));
+            }
+            let status = command.status()
                 .map_err(|error| format!("启动安装器失败：{error}"))?;
             if !status.success() { return Err(format!("安装器退出码：{}", status.code().unwrap_or(-1))); }
         }
@@ -564,6 +572,25 @@ fn install_package(package: &PackageInfo, file: &Path, unity_path: &Path, cancel
         other => return Err(format!("不支持的安装包类型：{other}")),
     }
     Ok(())
+}
+
+fn command_arguments(command_line: &str) -> Vec<String> {
+    let mut arguments = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    for character in command_line.chars() {
+        match character {
+            '"' => quoted = !quoted,
+            character if character.is_whitespace() && !quoted => {
+                if !current.is_empty() {
+                    arguments.push(std::mem::take(&mut current));
+                }
+            }
+            character => current.push(character),
+        }
+    }
+    if !current.is_empty() { arguments.push(current); }
+    arguments
 }
 
 fn perform_install(app: AppHandle, request: InstallRequest, state: InstallState) -> Result<(), String> {
