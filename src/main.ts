@@ -138,6 +138,10 @@ function componentById(id: string): Component | undefined {
   return state.release ? allComponents(state.release.modules).find((item) => item.id === id) : undefined;
 }
 
+function isLanguagePack(node: Component): boolean {
+  return node.category?.toUpperCase() === "LANGUAGE_PACK" || node.id.toLowerCase().startsWith("language-");
+}
+
 function packageCount(): number {
   if (!state.release) return 0;
   return 1 + [...state.selectedIds].filter((id) => componentById(id)).length;
@@ -239,6 +243,7 @@ function renderVersionOptions(): string {
 function renderComponent(node: Component, depth = 0): string {
   if (node.hidden && depth === 0) return "";
   const selected = state.selectedIds.has(node.id);
+  const languagePack = isLanguagePack(node);
   const cached = state.cache[node.id];
   const children = (node.subModules ?? []).map((child) => renderComponent(child, depth + 1)).join("");
   const indent = Math.min(depth, 3) * 20;
@@ -251,7 +256,7 @@ function renderComponent(node: Component, depth = 0): string {
       </label>
       <div class="component-icon ${node.category === "PLATFORM" ? "platform" : "tool"}">${node.category === "PLATFORM" ? "◆" : "◇"}</div>
       <div class="component-copy">
-        <div class="component-title">${escapeHtml(node.name || node.id)} ${node.required ? '<span class="required">必需</span>' : ""}</div>
+        <div class="component-title">${escapeHtml(node.name || node.id)} ${node.required ? '<span class="required">必需</span>' : languagePack ? '<span class="optional">可选</span>' : ""}</div>
         <div class="component-description">${escapeHtml(node.description || node.id)}</div>
       </div>
       <div class="component-meta">
@@ -329,7 +334,7 @@ function render(): void {
             ${release ? renderEditor(release.editor) : ""}
             ${release ? release.modules.filter((item) => !item.hidden).map((item) => renderComponent(item)).join("") : '<div class="empty-state">组件会显示在这里</div>'}
           </div>
-          <div class="components-foot"><span><span class="legend-dot"></span>已缓存的组件会自动跳过下载</span><span>父组件会包含其必需的子组件</span></div>
+          <div class="components-foot"><span><span class="legend-dot"></span>已缓存的组件会自动跳过下载</span><span>语言包可单独选择</span></div>
         </section>
         <section class="panel progress-panel"><div class="progress-title"><div><div class="panel-label">03 · 下载与安装</div><h2>安装进度</h2></div><div class="progress-mode ${state.offline ? "offline" : ""}">${state.offline ? "离线缓存" : "可断点续传"}</div></div>${renderProgress()}${state.logs.length ? `<div class="logs">${state.logs.map((log) => `<div>${escapeHtml(log)}</div>`).join("")}</div>` : ""}</section>
         <footer class="action-bar"><div class="action-info"><span class="action-count">${packageCount()}</span><span>个安装包将被处理</span></div><button class="secondary-button" id="cancel-button" ${state.installing ? "" : "disabled"}>取消</button><button class="primary-button" id="install-button" ${canInstall ? "" : "disabled"}>${state.installing ? "安装中…" : state.offline ? "开始离线安装" : "下载并安装"}<span>→</span></button></footer>

@@ -167,11 +167,15 @@ fn parse_component(value: &Value) -> Component {
         .map(|items| items.iter().map(parse_component).collect())
         .unwrap_or_default();
     let rename = value.get("extractedPathRename");
+    let id = text_field(value, "id");
+    let category = optional_text(value, "category");
+    let language_pack = category.as_deref().is_some_and(|item| item.eq_ignore_ascii_case("LANGUAGE_PACK"))
+        || id.to_ascii_lowercase().starts_with("language-");
     Component {
-        id: text_field(value, "id"),
+        id,
         name: text_field(value, "name"),
         description: optional_text(value, "description"),
-        category: optional_text(value, "category"),
+        category,
         kind: text_field(value, "type"),
         url: text_field(value, "url"),
         size: size_field(value, "downloadSize"),
@@ -180,9 +184,11 @@ fn parse_component(value: &Value) -> Component {
         rename_from: rename.and_then(|v| optional_text(v, "from")),
         rename_to: rename.and_then(|v| optional_text(v, "to")),
         command: optional_text(value, "cmd"),
-        required: value.get("required").and_then(Value::as_bool).unwrap_or(false),
+        // Unity's release metadata currently marks language packs as required,
+        // but they are independent localization files and must remain optional.
+        required: !language_pack && value.get("required").and_then(Value::as_bool).unwrap_or(false),
         hidden: value.get("hidden").and_then(Value::as_bool).unwrap_or(false),
-        pre_selected: value.get("preSelected").and_then(Value::as_bool).unwrap_or(false),
+        pre_selected: !language_pack && value.get("preSelected").and_then(Value::as_bool).unwrap_or(false),
         sub_modules,
     }
 }
