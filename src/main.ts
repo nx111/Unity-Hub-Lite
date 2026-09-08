@@ -119,6 +119,25 @@ const state = {
 let unlistenProgress: UnlistenFn | undefined;
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
+const CACHE_DIR_STORAGE_KEY = "unity-hub-lite.cache-dir";
+
+function readSavedCacheDir(): string {
+  try {
+    return localStorage.getItem(CACHE_DIR_STORAGE_KEY)?.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
+function saveCacheDir(value: string): void {
+  try {
+    const normalized = value.trim();
+    if (normalized) localStorage.setItem(CACHE_DIR_STORAGE_KEY, normalized);
+    else localStorage.removeItem(CACHE_DIR_STORAGE_KEY);
+  } catch {
+    // Some embedded webviews can disable storage; the current value still works.
+  }
+}
 
 function isTauri(): boolean {
   return "__TAURI_INTERNALS__" in window;
@@ -212,13 +231,13 @@ async function refreshCache(): Promise<void> {
 
 async function loadDefaults(): Promise<void> {
   if (!isTauri()) {
-    state.cacheDir = "%LOCALAPPDATA%\\UnityOfflineHub\\cache";
+    state.cacheDir = readSavedCacheDir() || "Downloads";
     state.installDir = "C:\\Unity";
     return;
   }
   try {
     const defaults = await invoke<AppDefaults>("get_defaults");
-    state.cacheDir = defaults.cacheDir;
+    state.cacheDir = readSavedCacheDir() || defaults.cacheDir;
     state.installDir = defaults.installDir;
   } catch (error) {
     state.error = String(error);
@@ -414,6 +433,7 @@ function bindEvents(): void {
   });
   document.querySelector<HTMLInputElement>("#cache-dir")?.addEventListener("change", (event) => {
     state.cacheDir = (event.target as HTMLInputElement).value;
+    saveCacheDir(state.cacheDir);
     void refreshCache();
   });
   document.querySelector<HTMLButtonElement>("#browse-install")?.addEventListener("click", () => void browseFolder("install"));
@@ -450,7 +470,10 @@ async function browseFolder(target: "install" | "cache"): Promise<void> {
   const selected = await open({ directory: true, multiple: false, defaultPath: current || undefined });
   if (typeof selected !== "string" || !selected) return;
   if (target === "install") state.installDir = selected;
-  else state.cacheDir = selected;
+  else {
+    state.cacheDir = selected;
+    saveCacheDir(state.cacheDir);
+  }
   render();
   await refreshCache();
 }

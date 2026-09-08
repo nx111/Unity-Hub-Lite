@@ -126,11 +126,9 @@ struct AppDefaults {
 }
 
 fn default_cache_dir() -> PathBuf {
-    dirs::cache_dir()
-        .or_else(dirs::data_local_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("UnityHubLite")
-        .join("packages")
+    dirs::download_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join("Downloads")))
+        .unwrap_or_else(|| PathBuf::from("Downloads"))
 }
 
 fn default_install_dir() -> PathBuf {

@@ -32,7 +32,7 @@ rustup toolchain install stable --profile minimal
 npm run tauri build
 ```
 
-缓存按 `缓存目录/<Unity版本>/` 保存，未完成的下载保留为 `.part` 文件。勾选“仅使用本地缓存（离线安装）”后不会访问网络；Editor 元数据也会从同一目录的 `release.json` 回退读取。
+缓存默认使用系统 `Downloads` 目录，也可以在界面中修改；修改后的目录会在下次启动时自动恢复。所有缓存按 `缓存目录/<Unity版本>/` 保存，未完成的下载保留为 `.part` 文件。勾选“仅使用本地缓存（离线安装）”后不会访问网络；Editor 元数据也会从对应版本目录的 `release.json` 回退读取。
 
 组件列表会根据 Editor 目录下的 `modules.json` 和标准模块目录标记已安装状态。再次安装时已安装模块会自动跳过；对可安全识别路径的模块会显示“卸载”按钮，语言包按单个 `.po` 文件卸载。
 
