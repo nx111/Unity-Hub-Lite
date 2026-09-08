@@ -91,6 +91,8 @@ struct InstallRequest {
     destination: String,
     cache_dir: String,
     offline: bool,
+    #[serde(default)]
+    force_reinstall: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -871,7 +873,7 @@ fn perform_install(app: AppHandle, request: InstallRequest, state: InstallState)
         completed_items += 1;
     }
     for package in selected {
-        if package_is_installed(&package, &unity_path) {
+        if !request.force_reinstall && package_is_installed(&package, &unity_path) {
             emit_progress(&app, ProgressEvent {
                 phase: "install".to_string(), item_id: Some(package.id.clone()), item_name: Some(package.name.clone()),
                 downloaded: 0, total: None, completed_items, total_items,
@@ -900,8 +902,10 @@ fn perform_install(app: AppHandle, request: InstallRequest, state: InstallState)
     emit_progress(&app, ProgressEvent {
         phase: "done".to_string(), item_id: None, item_name: None, downloaded: 0, total: None,
         completed_items, total_items,
-        status: if pending.is_empty() { "没有需要安装的组件".to_string() } else { "安装完成".to_string() },
-        message: Some(if pending.is_empty() {
+        status: if pending.is_empty() && !request.force_reinstall { "没有需要安装的组件".to_string() } else { "安装完成".to_string() },
+        message: Some(if request.force_reinstall {
+            format!("Unity {} 修复安装完成，已重新处理所选组件", request.release.version)
+        } else if pending.is_empty() {
             format!("Unity {} 的所选组件均已安装，未重复处理", request.release.version)
         } else {
             format!("Unity {} 已安装到 {}", request.release.version, unity_path.display())

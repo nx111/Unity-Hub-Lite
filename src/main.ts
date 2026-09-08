@@ -68,6 +68,7 @@ interface InstallRequest {
   destination: string;
   cacheDir: string;
   offline: boolean;
+  forceReinstall: boolean;
 }
 
 interface ProgressEvent {
@@ -134,7 +135,7 @@ function escapeHtml(value: unknown): string {
 
 function formatBytes(bytes?: number): string {
   if (!bytes || bytes <= 0) return "大小未知";
-  const units = ["B", "GB", "TB"];
+  const units = ["B", "KB", "MB", "GB", "TB"];
   let value = bytes;
   let unit = 0;
   while (value >= 1024 && unit < units.length - 1) {
@@ -251,7 +252,7 @@ async function loadRelease(version: string, rerender = true): Promise<void> {
   if (!version || !isTauri()) return;
   state.loadingRelease = true;
   state.error = "";
-  if (rerender) render();
+  if (rerender) render(false);
   try {
     state.release = await invoke<ReleaseDetail>("get_release", { version, cacheDir: state.cacheDir });
     if (isTauri()) {
@@ -269,7 +270,7 @@ async function loadRelease(version: string, rerender = true): Promise<void> {
     state.error = `组件列表加载失败：${String(error)}`;
   } finally {
     state.loadingRelease = false;
-    render();
+    render(!rerender);
   }
 }
 
@@ -345,10 +346,13 @@ function renderProgress(): string {
     <div class="overall-track"><span style="width:${overall}%"></span></div>`;
 }
 
-function render(): void {
+function render(preserveComponentScroll = true): void {
   const release = state.release;
+  const componentList = preserveComponentScroll ? app.querySelector<HTMLElement>(".component-list") : null;
+  const componentScrollTop = componentList?.scrollTop ?? 0;
   const selectedSizeText = selectedSize() ? formatBytes(selectedSize()) : "—";
   const canInstall = Boolean(release && state.installDir.trim() && !state.installing && state.uninstalling.size === 0 && (packageCount() > 0 || state.pendingUninstall.size > 0));
+  const canRepair = Boolean(release && state.installDir.trim() && state.cacheDir.trim() && !state.installing && state.uninstalling.size === 0);
   app.innerHTML = `
     <div class="shell">
       <aside class="sidebar">
@@ -388,9 +392,13 @@ function render(): void {
           <div class="components-foot"><span><span class="legend-dot"></span>已安装的组件保持选中，取消勾选即卸载</span><span>语言包可单独选择</span></div>
         </section>
         <section class="panel progress-panel"><div class="progress-title"><div><div class="panel-label">03 · 下载与安装</div><h2>安装进度</h2></div><div class="progress-mode ${state.offline ? "offline" : ""}">${state.offline ? "离线缓存" : "可断点续传"}</div></div>${renderProgress()}${state.logs.length ? `<div class="logs">${state.logs.map((log) => `<div>${escapeHtml(log)}</div>`).join("")}</div>` : ""}</section>
-<footer class="action-bar"><div class="action-info"><span class="action-count">${packageCount()}</span><span>个安装包将被处理</span>${state.pendingUninstall.size ? ` <span class="action-count">${state.pendingUninstall.size}</span><span>个组件将卸载</span>` : ""}</div><button class="secondary-button" id="cancel-button" ${state.installing ? "" : "disabled"}>取消</button><button class="primary-button" id="install-button" ${canInstall ? "" : "disabled"}>${state.installing ? "处理中…" : state.offline ? "开始离线安装" : "下载并安装"}<span>→</span></button></footer>
+<footer class="action-bar"><div class="action-info"><span class="action-count">${packageCount()}</span><span>个安装包将被处理</span>${state.pendingUninstall.size ? ` <span class="action-count">${state.pendingUninstall.size}</span><span>个组件将卸载</span>` : ""}</div><button class="secondary-button" id="cancel-button" ${state.installing ? "" : "disabled"}>取消</button><button class="repair-button" id="repair-button" title="强制重新安装当前已选组件" ${canRepair ? "" : "disabled"}>修复安装</button><button class="primary-button" id="install-button" ${canInstall ? "" : "disabled"}>${state.installing ? "处理中…" : state.offline ? "开始离线安装" : "下载并安装"}<span>→</span></button></footer>
       </main>
     </div>`;
+  if (preserveComponentScroll) {
+    const newComponentList = app.querySelector<HTMLElement>(".component-list");
+    if (newComponentList) newComponentList.scrollTop = componentScrollTop;
+  }
   bindEvents();
 }
 
@@ -430,6 +438,7 @@ function bindEvents(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-uninstall-id]").forEach((button) => {
     button.addEventListener("click", () => void uninstallModule(button.dataset.uninstallId || ""));
   });
+  document.querySelector<HTMLButtonElement>("#repair-button")?.addEventListener("click", () => void startInstall(true));
   document.querySelector<HTMLButtonElement>("#install-button")?.addEventListener("click", () => void startInstall());
   document.querySelector<HTMLButtonElement>("#cancel-button")?.addEventListener("click", () => void cancelInstall());
 }
@@ -470,7 +479,7 @@ async function uninstallModule(moduleId: string): Promise<void> {
   }
 }
 
-async function startInstall(): Promise<void> {
+async function startInstall(forceReinstall = false): Promise<void> {
   if (!state.release || !state.installDir.trim() || state.installing || state.uninstalling.size > 0) return;
   if (!isTauri()) {
     state.error = "请使用 `npm run tauri dev` 启动桌面应用后执行安装。";
@@ -478,12 +487,15 @@ async function startInstall(): Promise<void> {
     return;
   }
   const pendingNames = [...state.pendingUninstall].map((id) => componentById(id)?.name || id);
-  if (pendingNames.length > 0 && !window.confirm(`将卸载以下组件：\n${pendingNames.join("\n")}\n\n是否继续？`)) return;
+  const confirmations: string[] = [];
+  if (pendingNames.length > 0) confirmations.push(`将卸载以下组件：\n${pendingNames.join("\n")}`);
+  if (forceReinstall) confirmations.push("将强制重新安装所有已选中的组件（包括已安装组件）。");
+  if (confirmations.length > 0 && !window.confirm(`${confirmations.join("\n\n")}\n\n是否继续？`)) return;
   state.installing = true;
   state.error = "";
   state.progress = null;
   state.logs = [];
-  addLog(state.offline ? "开始检查本地缓存…" : "开始下载组件，支持断点续传…");
+  addLog(forceReinstall ? "开始修复安装，重新处理已选组件…" : state.offline ? "开始检查本地缓存…" : "开始下载组件，支持断点续传…");
   render();
   const request: InstallRequest = {
     release: state.release,
@@ -492,6 +504,7 @@ async function startInstall(): Promise<void> {
     destination: state.installDir.trim(),
     cacheDir: state.cacheDir.trim(),
     offline: state.offline,
+    forceReinstall,
   };
   try {
     await invoke("start_install", { request });
