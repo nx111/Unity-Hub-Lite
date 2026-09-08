@@ -647,7 +647,13 @@ fn module_manifest_status(unity_path: &Path, module_id: &str) -> Option<bool> {
         .or_else(|| value.get("modules").and_then(Value::as_array))?;
     modules.iter()
         .find(|module| text_field(module, "id") == module_id)
-        .and_then(|module| module.get("isInstalled").and_then(Value::as_bool))
+        .and_then(|module| {
+            // Recent Unity manifests expose isInstalled. Older manifests keep
+            // the persisted module selection in selected instead.
+            module.get("isInstalled")
+                .and_then(Value::as_bool)
+                .or_else(|| module.get("selected").and_then(Value::as_bool))
+        })
 }
 
 fn playback_engine_path(unity_path: &Path, directory: &str) -> PathBuf {
@@ -711,8 +717,8 @@ fn module_install_paths(package: &PackageInfo, unity_path: &Path) -> Vec<PathBuf
 }
 
 fn package_is_installed(package: &PackageInfo, unity_path: &Path) -> bool {
-    if module_manifest_status(unity_path, &package.id) == Some(true) {
-        return true;
+    if let Some(installed) = module_manifest_status(unity_path, &package.id) {
+        return installed;
     }
     module_install_paths(package, unity_path).iter().any(|path| path.exists())
 }
